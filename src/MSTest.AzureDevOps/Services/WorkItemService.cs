@@ -67,7 +67,7 @@ namespace MSTest.AzureDevOps.Services
 
                 // Retrieve work item information
                 var response = await httpClient
-                    .GetAsync($"https://dev.azure.com/{MSTestConfig.Instance.AzureDevOps.AccountName}/_apis/wit/workitems/{workItemId}?api-version=5.0-preview.3&fields=System.Title,Microsoft.VSTS.TCM.LocalDataSource");
+                    .GetAsync($"https://dev.azure.com/{MSTestConfig.Instance.AzureDevOps.AccountName}/_apis/wit/workitems/{workItemId}?api-version=5.0-preview.3&fields=System.WorkItemType,System.Title,Microsoft.VSTS.TCM.LocalDataSource,Microsoft.VSTS.TCM.Parameters");
 
                 // Check if was sucessfull
                 if (!response.IsSuccessStatusCode)
@@ -80,8 +80,10 @@ namespace MSTest.AzureDevOps.Services
                 return new GetByIdResponseModel()
                 {
                     Id = jObject.id,
+                    WorkItemType = jObject.fields["System.WorkItemType"],
                     Title = jObject.fields["System.Title"],
-                    TestDataSource = jObject.fields["Microsoft.VSTS.TCM.LocalDataSource"] != null ? jObject.fields["Microsoft.VSTS.TCM.LocalDataSource"] : null
+                    TestDataSource = jObject.fields["Microsoft.VSTS.TCM.LocalDataSource"] != null ? jObject.fields["Microsoft.VSTS.TCM.LocalDataSource"] : null,
+                    TestParameters = jObject.fields["Microsoft.VSTS.TCM.Parameters"] != null ? jObject.fields["Microsoft.VSTS.TCM.Parameters"] : null
                 };
             }
         }

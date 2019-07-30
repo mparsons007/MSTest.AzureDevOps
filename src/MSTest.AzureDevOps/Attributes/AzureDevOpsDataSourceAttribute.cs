@@ -1,12 +1,17 @@
 ﻿using Microsoft.VisualStudio.TestTools.UnitTesting;
+using MSTest.AzureDevOps.Extensions;
 using MSTest.AzureDevOps.Models;
 using MSTest.AzureDevOps.Services;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
+using System.Xml;
+using System.Xml.Serialization;
 
 namespace MSTest.AzureDevOps.Attributes
 {
@@ -15,6 +20,8 @@ namespace MSTest.AzureDevOps.Attributes
     /// </summary>
     public class AzureDevOpsDataSourceAttribute : Attribute, ITestDataSource
     {
+        private const string TESTCASE = "Test Case";
+
         #region Properties
 
         /// <summary>
@@ -50,36 +57,98 @@ namespace MSTest.AzureDevOps.Attributes
             var workItemAsync = WorkItemService.Instance.GetById(_workItemId);
             workItemAsync.Wait();
 
+            if (workItemAsync.Result.WorkItemType != TESTCASE)
+                throw new System.NullReferenceException("The following Work Item is not a Test Case: " + _workItemId.ToString());
+
             // Check if service parameters data was retrieved
-            if (string.IsNullOrWhiteSpace(workItemAsync.Result.TestDataSource))
-                return null;
+            if ((string.IsNullOrWhiteSpace(workItemAsync.Result.TestDataSource)) &&
+                    (string.IsNullOrWhiteSpace(workItemAsync.Result.TestParameters)))
+                throw new System.NullReferenceException("Unable to find parameter data in Test Case " + _workItemId.ToString());
 
             var arrayTestCaseData = new List<object[]>();
 
-            // convert parameters data (from work item) to dataset
-            var xmlParametersStream = new StringReader(workItemAsync.Result.TestDataSource);
-            var dataSetParameters = new DataSet();
-            dataSetParameters.ReadXml(xmlParametersStream);
-
-            // Iterate each row from parameters
-            foreach (DataRow row in dataSetParameters.Tables[0].Rows)
+            // Check the response type
+            // An XML response indicates parameters are saved in the Test Case
+            // A JSON response indicates a Shared Parameter is referenced in the Test Case
+            if (Extension.IsXML(workItemAsync.Result.TestDataSource))
             {
-                // Create test case object
-                var testCaseData = new TestCaseData()
+                // convert parameters data (from work item) to dataset
+                var testDataSourceStream = new StringReader(workItemAsync.Result.TestDataSource);
+                var dataSetTestDataSource = new DataSet();
+
+                dataSetTestDataSource.ReadXml(testDataSourceStream);
+
+                // Iterate each row from parameters
+                foreach (System.Data.DataRow row in dataSetTestDataSource.Tables[0].Rows)
                 {
-                    Id = _workItemId,
-                    Title = workItemAsync.Result.Title
-                };
+                    // Create test case object
+                    var testCaseData = new TestCaseData()
+                    {
+                        Id = _workItemId,
+                        Title = workItemAsync.Result.Title
+                    };
 
-                foreach (DataColumn column in dataSetParameters.Tables[0].Columns)
-                    testCaseData.Parameters.Add(column.ColumnName, row[column.ColumnName].ToString());
+                    foreach (DataColumn column in dataSetTestDataSource.Tables[0].Columns)
+                        testCaseData.Parameters.Add(column.ColumnName, row[column.ColumnName].ToString());
 
-                arrayTestCaseData.Add(new[] { testCaseData });
+                    arrayTestCaseData.Add(new[] { testCaseData });
+                }
             }
+            else if (Extension.IsJson(workItemAsync.Result.TestDataSource))
+            {
+                // Retrieve information about the Shared Parameter
+                var deserializedTempDataSource = JsonConvert.DeserializeObject<SharedParameterFormat>(workItemAsync.Result.TestDataSource);
 
+                if (deserializedTempDataSource.ParameterMap.Count == 0)
+                    throw new System.NullReferenceException("Unable to find parameter data in Test Case " + _workItemId.ToString());
+
+                int sharedParamID = deserializedTempDataSource.SharedParameterDataSetIds[0];
+
+                // Create a list of the columns utilized from the Shared Parameter
+                IEnumerable<string> columnList = deserializedTempDataSource.ParameterMap.Select(x => x.SharedParameterName).ToList();
+
+                // Get work item's information by id
+                var sharedParamAsync = WorkItemService.Instance.GetById(sharedParamID);
+                workItemAsync.Wait();
+
+                // Check if test parameter data was retrieved
+                if (string.IsNullOrWhiteSpace(sharedParamAsync.Result.TestParameters)) 
+                    return null;
+
+                // Read and deserialize the Shared Parameter xml response
+                XmlSerializer xmlSerializer = new XmlSerializer(typeof(SharedParameterData));
+
+                XmlReader xmlReader = XmlReader.Create(new StringReader(sharedParamAsync.Result.TestParameters));
+
+                SharedParameterData result = (SharedParameterData)xmlSerializer.Deserialize(xmlReader);
+
+                // Iterate through each data row in the Shared Parameter response
+                foreach (Models.DataRow dataRow in result.ParamData.DataRow)
+                {
+                    // Create test case object
+                    var testCaseData = new TestCaseData()
+                    {
+                        Id = _workItemId,
+                        Title = workItemAsync.Result.Title
+                    };
+
+                    // Look through each column in the list
+                    foreach (string column in columnList)
+                    {
+                        // Search for the Key that matches the column name
+                        var myVal = dataRow.Kvp.First(x => x.Key  == column);
+
+                        // Add the column name and the value to the Test Case Data object
+                        testCaseData.Parameters.Add(column, myVal.Value);
+                    }
+                    arrayTestCaseData.Add(new[] { testCaseData });
+                }
+            }
             // Return test data array
             return arrayTestCaseData.ToArray();
         }
+
+
 
         /// <summary>
         /// Gets the display name corresponding to test data row for displaying in TestResults.
@@ -96,5 +165,7 @@ namespace MSTest.AzureDevOps.Attributes
         }
 
         #endregion
+
+
     }
 }
